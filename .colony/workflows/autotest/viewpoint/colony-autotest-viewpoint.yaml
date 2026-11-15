@@ -1,0 +1,157 @@
+name: colony-autotest-viewpoint
+description: |
+  Runs every unresolved item of ONE viewpoint's test-case checklist (B6
+  format, QD-14), one item per loop_group iteration: a script picks the next
+  `todo` item, an agent verifies it, a script records the verdict back to the
+  checklist through the same optimistic lock the file format requires. A
+  second, independently-modeled agent reviews the full result set once the
+  loop ends, before this run's own `returns:` closes it.
+
+  Use when: spawned as a `colony-autotest` fan-out child, one per viewpoint —
+  never launched directly, it has no meaning without a specific checklist.
+  NOT for: designing test cases (the checklist's content is authored
+  elsewhere, QD-14) or fixing a failure the review flags (a separate task).
+
+  SKELETON (WP-12 W1, 2026-10-27): wired but not yet run against a real
+  checklist — see this pack's README for what "verify" still needs before a
+  real run (browser/API access, a real app under test) and the sysadmin
+  policy currently pausing test execution.
+
+inputs:
+  # The whole fan-out item, delivered automatically by the parent's
+  # `fan_out.as: viewpoint` — NOT something the parent's own `with:` maps
+  # field-by-field (child-run.ts: "with: map ... PLUS the per-item fan_out.as
+  # entry" are two separate things). `$INPUTS.viewpoint.checklistPath` /
+  # `.id` below read straight from this object.
+  viewpoint:
+    description: "{ id, checklistPath } for the one viewpoint this run processes."
+
+returns: outcome
+mutates_checkout: true
+
+nodes:
+  - id: run-items
+    loop_group:
+      max_iterations: 50
+      # A bare substitution can word-split/glob-expand once a large output
+      # spills to a file (colony validate's own warning) — assign to a shell
+      # variable first, then quote the VARIABLE (not the placeholder itself).
+      until_bash: |
+        done=$pick.output.done
+        [ "$done" = true ]
+      nodes:
+        - id: pick
+          script: pick-next-item
+          runtime: bun
+          with:
+            checklist_path: "$INPUTS.viewpoint.checklistPath"
+          output_format:
+            type: object
+            properties:
+              done: { type: boolean }
+              itemId: { type: [string, 'null'] }
+              text: { type: [string, 'null'] }
+              contentHash: { type: [string, 'null'] }
+            required: [done, itemId, text, contentHash]
+
+        # The judgment step (CONSTITUTION.md section 1, "agents first"): did
+        # the product actually do what this item describes. `context: fresh`
+        # so one item's investigation never leaks into the next's.
+        - id: verify
+          depends_on: [pick]
+          when: "$pick.output.done == false"
+          context: fresh
+          model: medium
+          prompt: |
+            Checklist item `$pick.output.itemId` (viewpoint $INPUTS.viewpoint.id):
+            $pick.output.text
+
+            Carry out exactly what this item describes against the running
+            product and decide the outcome. Capture evidence (a screenshot
+            or log path under this run's artifacts directory) for `done` or
+            `failed`; leave it empty for `skipped`. If the item does not
+            apply to this workspace/build, use `skipped` and say why in
+            `notes` rather than forcing a pass or fail.
+          output_format:
+            type: object
+            properties:
+              status: { type: string, enum: [done, failed, skipped] }
+              evidence: { type: string }
+              bug: { type: string }
+              notes: { type: string }
+            required: [status, evidence, bug, notes]
+
+        - id: record
+          script: record-result
+          runtime: bun
+          depends_on: [pick, verify]
+          when: "$pick.output.done == false"
+          with:
+            checklist_path: "$INPUTS.viewpoint.checklistPath"
+            item_id: "$pick.output.itemId"
+            status: "$verify.output.status"
+            expected_hash: "$pick.output.contentHash"
+            evidence: "$verify.output.evidence"
+            bug: "$verify.output.bug"
+          output_format:
+            type: object
+            properties:
+              written: { type: boolean }
+              newHash: { type: string }
+            required: [written, newHash]
+
+  - id: collect
+    script: collect-results
+    runtime: bun
+    depends_on: [run-items]
+    with:
+      checklist_path: "$INPUTS.viewpoint.checklistPath"
+    output_format:
+      type: object
+      properties:
+        items: { type: array, items: { type: object } }
+        unresolvedCount: { type: integer }
+      required: [items, unresolvedCount]
+
+  # ts-r (soát độc lập, tm_test): a model DIFFERENT from `verify`'s reviews the
+  # whole viewpoint's recorded results before this run closes. Independence is
+  # declared here (large vs. verify's medium) the same way the pack's own
+  # CI/review split pins its own models per role.
+  - id: review
+    depends_on: [collect]
+    model: large
+    prompt: |
+      Independent review of viewpoint $INPUTS.viewpoint.id's test run.
+      $collect.output.unresolvedCount items never resolved (still todo/doing
+      after the loop ended — that is itself a finding, not just a count).
+
+      Recorded items:
+      $collect.output.items
+
+      Decide whether this viewpoint's result set is trustworthy: evidence
+      actually supports each `done`/`failed` verdict, no verdict looks
+      rubber-stamped, nothing resolved for the wrong reason. Flag any item
+      id you disagree with or cannot verify from its own evidence.
+    output_format:
+      type: object
+      properties:
+        verdict: { type: string, enum: [reviewed_ok, concerns] }
+        flaggedItemIds: { type: array, items: { type: string } }
+        notes: { type: string }
+      required: [verdict, flaggedItemIds, notes]
+
+  - id: outcome
+    script: summarize-viewpoint
+    runtime: bun
+    depends_on: [review]
+    with:
+      viewpoint_id: "$INPUTS.viewpoint.id"
+      verdict: "$review.output.verdict"
+      flagged_item_ids: "$review.output.flaggedItemIds"
+    output_format:
+      type: object
+      properties:
+        viewpointId: { type: string }
+        verdict: { type: string, enum: [reviewed_ok, concerns] }
+        flaggedItemIds: { type: array, items: { type: string } }
+      required: [viewpointId, verdict, flaggedItemIds]

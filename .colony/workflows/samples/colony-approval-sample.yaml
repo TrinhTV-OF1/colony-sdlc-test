@@ -1,0 +1,31 @@
+name: colony-approval-sample
+description: |
+  One node, one approval gate, no AI call: the run pauses immediately and
+  waits for a human to approve or reject, costing no tokens either way.
+  Approving completes the run (there is no node after the gate); rejecting
+  cancels it.
+
+  Use when: checking that a paused run's question reaches the chat it was
+  dispatched from (not a worker conversation), with an Approve/Reject footer
+  attached to that same chat message, and that answering it (from that
+  button, the Runs panel, or `workflow approve`/`workflow reject`) resumes
+  or cancels the run and the chat message locks to the result.
+  NOT for: exercising an actual agent turn — see colony-announce-sample /
+  colony-role-sample for that.
+
+  Note: `approval:` is the deprecated spelling (parsing warns, runs unchanged)
+  — picked here ON PURPOSE because it is the `gate.ts` code path, one of the
+  four places this fix touched; `wait: { attention:, form: approval }` is the
+  current spelling but exercises `wait.ts` instead.
+
+# Touches no files: runs in the launch checkout, so it also works in a repo with no git remote.
+worktree:
+  enabled: false
+mutates_checkout: false
+
+nodes:
+  - id: review
+    approval:
+      message: |
+        Sample approval gate — no AI involved, nothing to lose by answering
+        either way. Approve to finish the run, reject to cancel it.

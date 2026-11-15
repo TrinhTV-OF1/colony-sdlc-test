@@ -1,0 +1,54 @@
+name: colony-role-sample
+description: |
+  Sample of `agent_role`: each node takes its persona (and, when the role sets
+  them, its tools) from a Teammate agent role, then calls the provider
+  directly. No Teammate session is created and nothing is written to Teammate.
+
+  Three nodes, three roles: a Dev writes a short plan, a QA reviews it, a PM
+  sums both up for a human. `model: small` on every node keeps the run cheap;
+  because the node sets `model`, it wins over the role's own model.
+  `allowed_tools: []` on every node means no tools at all (also node-level).
+
+  Needs: a running combined server (team-backend answers the role lookup) with
+  TEAMMATE_INTERNAL_TOKEN set. The role titles must match exactly, em dash
+  included. A missing role or an unreachable team-backend fails the node with
+  a message naming the title or the address; it never falls back silently.
+
+  Use when: checking that role personas reach a flow node, or as a template
+  for a flow that wants a role's voice without opening a Teammate session.
+  NOT for: real work. The prompts are tiny on purpose.
+
+nodes:
+  - id: plan
+    agent_role: "Dev — Development"
+    model: small
+    allowed_tools: []
+    prompt: |
+      Task: a CLI command deletes temporary files. Add a --dry-run flag.
+      Write the implementation plan as at most 4 short bullets. No preamble.
+
+  - id: review
+    depends_on: [plan]
+    agent_role: "QA — Quality Assurance"
+    model: small
+    allowed_tools: []
+    prompt: |
+      Review this plan. List at most 3 risks or missing test cases, one line each.
+
+      Plan:
+      $plan.output
+
+  - id: summary
+    depends_on: [review]
+    agent_role: "PM — Project Management"
+    model: small
+    allowed_tools: []
+    prompt: |
+      In 3 lines: what the plan does, what QA found, and the one decision a
+      human still has to make.
+
+      Plan:
+      $plan.output
+
+      QA findings:
+      $review.output

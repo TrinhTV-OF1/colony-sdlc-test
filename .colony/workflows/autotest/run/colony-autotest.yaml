@@ -1,0 +1,86 @@
+name: colony-autotest
+description: |
+  Runs every viewpoint in a viewpoint catalog checklist (B6 format, QD-15) as
+  its own governed child run (colony-autotest-viewpoint), one per viewpoint,
+  and summarizes the children's independent review verdicts into one typed
+  result. Rewrite of `tm_test` (AI-kit) for Colony's own engine: `ts-d`
+  (designing test cases) is NOT this workflow's job — it only reads a
+  checklist someone else already designed.
+
+  Use when: triggered to run the test suite a viewpoint catalog describes —
+  "run autotest for <catalog>".
+  NOT for: authoring the catalog or a viewpoint's checklist (QD-14/QD-15),
+  or fixing anything a review flags.
+
+  SKELETON (WP-12 W1, 2026-10-27): wired but not yet run — see README.md in
+  this directory.
+
+inputs:
+  viewpoint_catalog_path:
+    description: Path (relative to the checkout) to the viewpoint catalog checklist (binding field catalog.path).
+    # WP-12 QD-17 (2026-10-28) -- the session Test panel (U11) used to supply
+    # this on every dispatch (SessionTestPanel.tsx's own runWorkflow() call,
+    # now removed, G1c); without a default this input was effectively
+    # required with no caller left to satisfy it. The project-scoped
+    # convention that panel's own useChecklistMatrix.ts hard-coded
+    # (VIEWPOINT_CATALOG_PATH) is correct here too -- most projects keep
+    # their catalog at this one path, and a caller with a different layout
+    # still overrides it via `with:`.
+    default: .colony/qa/viewpoints.md
+
+returns: outcome
+mutates_checkout: true
+
+nodes:
+  - id: read-viewpoints
+    script: read-viewpoints
+    runtime: bun
+    with:
+      viewpoint_catalog_path: "$INPUTS.viewpoint_catalog_path"
+    output_format:
+      type: object
+      properties:
+        viewpoints:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              checklistPath: { type: string }
+            required: [id, checklistPath]
+      required: [viewpoints]
+
+  # One governed child run per viewpoint (#2121 `workflow:`+`fan_out:` —
+  # NOT `compose_fan_out`, which would inline every viewpoint into this same
+  # run instead of spawning a separate one each). Independent by default
+  # (`join: all_done`): one viewpoint failing never discards the others'
+  # results. Viewpoints write disjoint files (each its own checklist), so
+  # sharing this run's checkout across concurrent children is safe —
+  # RULE-11's "write-set rời nhau" condition holds without `isolation: worktree`.
+  # No `with:` here — `fan_out.as` already delivers the whole item as
+  # `$INPUTS.viewpoint` inside each child (child-run.ts's own doc: "the
+  # resolved `with:` map ... PLUS, for a fan-out child, the per-item
+  # `fan_out.as` entry" — `with:` and the per-item value are two separate
+  # things, and this node has nothing constant to add via `with:`).
+  - id: run-viewpoints
+    workflow: colony-autotest-viewpoint
+    depends_on: [read-viewpoints]
+    fan_out:
+      items: "$read-viewpoints.output.viewpoints"
+      as: viewpoint
+      join: all_done
+
+  - id: outcome
+    script: summarize-run
+    runtime: bun
+    depends_on: [run-viewpoints]
+    with:
+      results: { from: "$run-viewpoints.output" }
+    output_format:
+      type: object
+      properties:
+        totalViewpoints: { type: integer }
+        passed: { type: integer }
+        concerns: { type: integer }
+        failed: { type: integer }
+      required: [totalViewpoints, passed, concerns, failed]

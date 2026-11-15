@@ -1,0 +1,53 @@
+name: colony-announce-sample
+description: |
+  Two roles speak in the chat that launched this flow: a developer proposes, a
+  tester answers, each as its own named participant, and the answer comes back
+  as the flow's own result. Shows `announce:` together with `agent_role:`.
+
+  Use when: you want a flow to coordinate a small team in the chat window itself
+  ("propose a fix for <problem>"), instead of leaving its result in a worker
+  run the user must open.
+  NOT for: running a real agent session per role. A role here is a stateless
+  label plus the role's persona (agent_role): nothing is opened for it, and a
+  message it posts never reaches an agent or starts anything.
+
+# How `announce:` behaves (all enforced by the server, not by this file):
+#  - It posts ONE message per completed node, into the chat that launched the
+#    run, shown as written by `as`. It is an assistant message, never a user
+#    message, so it cannot route to agents.
+#  - A run with no launching chat (started from the CLI or a webhook), or a
+#    starter who may no longer write to that chat, posts nothing. The node still
+#    completes; the reason is recorded on it as an ANNOUNCE_* code.
+#  - Text is cut at a fixed size with a marker, and a run posts at most 20
+#    messages (COLONY_FLOW_ANNOUNCE_MAX_POSTS changes the limit).
+#  - `as` is a label: it does not have to equal `agent_role`, but matching the
+#    role's title keeps the chat honest about who spoke.
+nodes:
+  - id: propose
+    prompt: |
+      You are the developer on a small team. In at most 8 lines, propose how to
+      deal with the following request, naming the main risk of your proposal.
+
+      Request: $ARGUMENTS
+    agent_role: "Dev — Development"
+    model: small
+    allowed_tools: []
+    announce:
+      as: "Dev — Development"
+
+  - id: review
+    depends_on: [propose]
+    prompt: |
+      You are the tester on the same team. In at most 8 lines, say what you would
+      test first for this proposal and one case it does not cover.
+
+      Proposal:
+      $propose.output
+    agent_role: "QA — Quality Assurance"
+    model: small
+    allowed_tools: []
+    announce:
+      as: "QA — Quality Assurance"
+      text: |
+        Where I would test first:
+        $review.output
